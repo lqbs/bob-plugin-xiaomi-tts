@@ -10,8 +10,10 @@ var lang = require('./lang.js');
 var API_URL = 'https://api.xiaomimimo.com/v1/chat/completions';
 var API_DOCUMENT_URL = 'https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5';
 var DEFAULT_MODEL = 'mimo-v2.5-tts';
-var DEFAULT_VOICE = '冰糖';
-var DEFAULT_STYLE_PROMPT = '用自然清晰的语调朗读';
+var DEFAULT_VOICE = 'Dean';
+var DEFAULT_STYLE_PROMPT = 'Read the English text clearly and accurately for an English learner. Use a neutral tone and a slightly slow, steady pace. Pronounce each word naturally, and read the supplied text exactly once without adding explanations or other words.';
+var CACHE_DIR = '$sandbox/tts-cache';
+var pending = {};
 
 function supportLanguages() {
     return lang.supportLanguages.map(function (item) {
@@ -94,6 +96,74 @@ function extractAudioBase64(data) {
     }
 
     return null;
+}
+
+// 索引文件保存完整请求，以便校验哈希碰撞；音频单独保存为 WAV。
+function cacheKey(text, options) {
+    return JSON.stringify([DEFAULT_MODEL, 'wav', text, options.voice, options.stylePrompt]);
+}
+
+function cacheHash(key) {
+    var a = 2166136261, b = 5381;
+    for (var i = 0; i < key.length; i++) {
+        var c = key.charCodeAt(i);
+        a = Math.imul(a ^ c, 16777619);
+        b = Math.imul(b, 33) ^ c;
+    }
+    return ('00000000' + (a >>> 0).toString(16)).slice(-8) +
+        ('00000000' + (b >>> 0).toString(16)).slice(-8);
+}
+
+function cachePath(key) {
+    if (!$file.exists(CACHE_DIR) && !$file.mkdir(CACHE_DIR) && !$file.exists(CACHE_DIR)) return null;
+    var prefix = CACHE_DIR + '/' + cacheHash(key);
+    for (var i = 0; i < 1000; i++) {
+        var path = prefix + (i ? '-' + i : '');
+        var metadata = path + '.json';
+        if (!$file.exists(metadata)) return path;
+        var data = $file.read(metadata);
+        if (data && data.toUTF8() === key) return path;
+    }
+    return null;
+}
+
+function isWavBase64(base64) {
+    if (typeof base64 !== 'string' || base64.length < 16) return false;
+    var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var bytes = [];
+    for (var i = 0; i < 16; i += 4) {
+        var a = alphabet.indexOf(base64.charAt(i));
+        var b = alphabet.indexOf(base64.charAt(i + 1));
+        var c = alphabet.indexOf(base64.charAt(i + 2));
+        var d = alphabet.indexOf(base64.charAt(i + 3));
+        if (a < 0 || b < 0 || c < 0 || d < 0) return false;
+        bytes.push((a << 2) | (b >> 4), ((b & 15) << 4) | (c >> 2), ((c & 3) << 6) | d);
+    }
+    return bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 &&
+        bytes[8] === 87 && bytes[9] === 65 && bytes[10] === 86 && bytes[11] === 69;
+}
+
+function readCachedAudio(path) {
+    if (!path || !$file.exists(path + '.json') || !$file.exists(path + '.wav')) return null;
+    var data = $file.read(path + '.wav');
+    var base64 = data && data.toBase64();
+    return isWavBase64(base64) ? base64 : null;
+}
+
+function writeCachedAudio(path, key, base64) {
+    if (!path) return;
+    if (!isWavBase64(base64)) {
+        $log.error('小米 MiMo TTS 返回的音频不是有效 WAV，未写入缓存');
+        return;
+    }
+    var data = $data.fromBase64(base64);
+    if (!data) {
+        $log.error('小米 MiMo TTS 缓存音频解码失败');
+        return;
+    }
+    // 先记录完整键，避免同一个哈希的不同请求读取到错误音频。
+    if (!$file.exists(path + '.json') && !$file.write({path: path + '.json', data: $data.fromUTF8(key)})) { $log.error('小米 MiMo TTS 缓存索引写入失败'); return; }
+    if (!$file.write({path: path + '.wav', data: data})) $log.error('小米 MiMo TTS 缓存写入失败');
 }
 
 /**
@@ -189,7 +259,7 @@ function readOptions() {
     return {
         apiKey: optionText('apiKey', ''),
         voice: optionText('voice', DEFAULT_VOICE),
-        format: optionText('audioFormat', 'mp3'),
+        format: 'wav',
         stylePrompt: optionText('stylePrompt', DEFAULT_STYLE_PROMPT),
         timeout: pluginTimeoutInterval()
     };
@@ -213,6 +283,21 @@ function tts(query, completion) {
     }
 
     var options = readOptions();
+    var key = cacheKey(text, options);
+    var path = null;
+    try {
+        path = cachePath(key);
+        var cached = readCachedAudio(path);
+        if (cached) {
+            $log.info('小米 MiMo TTS 缓存命中');
+            completion({result: {type: 'base64', value: cached}});
+            return;
+        }
+    } catch (error) {
+        $log.error('小米 MiMo TTS 缓存读取失败: ' + error);
+        path = null;
+    }
+
     if (!options.apiKey) {
         completion({
             error: {
@@ -224,7 +309,24 @@ function tts(query, completion) {
         return;
     }
 
-    synthesize(text, options, completion);
+    if (pending[key]) {
+        pending[key].push(completion);
+        return;
+    }
+    pending[key] = [completion];
+    synthesize(text, options, function (response) {
+        if (response.result) {
+            try {
+                // 重新定位路径，避免并发请求发生哈希碰撞。
+                writeCachedAudio(cachePath(key), key, response.result.value);
+            } catch (error) {
+                $log.error('小米 MiMo TTS 缓存写入失败: ' + error);
+            }
+        }
+        var callbacks = pending[key];
+        delete pending[key];
+        callbacks.forEach(function (callback) { callback(response); });
+    });
 }
 
 function pluginTimeoutInterval() {
@@ -245,9 +347,8 @@ function pluginValidate(completion) {
         return;
     }
 
-    options.format = 'mp3';
     options.timeout = 20;
-    synthesize('你好', options, function (response) {
+    synthesize('Hello.', options, function (response) {
         if (response.error) {
             completion({ result: false, error: response.error });
             return;

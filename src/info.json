@@ -1,9 +1,9 @@
 {
     "identifier": "com.xiaomi.mimo.tts.bob.plugin",
-    "version": "1.0.0",
+    "version": "1.1.1",
     "category": "tts",
     "name": "小米 MiMo TTS",
-    "summary": "使用小米 MiMo 语音大模型 (MiMo-V2.5-TTS) 进行高质量语音合成",
+    "summary": "为英语学习提供清晰稳定的语音朗读与本地缓存",
     "icon": "132",
     "author": "liqingbin",
     "homepage": "https://github.com/liqingbin/bob-plugin-xiaomi-tts",
@@ -25,47 +25,23 @@
             "identifier": "voice",
             "type": "text",
             "title": "音色",
-            "desc": "填写音色名称，预置音色如：冰糖（默认）、茉莉、苏打、白桦、Mia 等",
-            "defaultValue": "冰糖",
+            "desc": "英文预置音色：Mia、Chloe、Milo、Dean",
+            "defaultValue": "Dean",
             "textConfig": {
                 "type": "visible",
-                "placeholderText": "冰糖",
+                "placeholderText": "Dean",
                 "height": "26"
             }
-        },
-        {
-            "identifier": "audioFormat",
-            "type": "menu",
-            "title": "音频格式",
-            "defaultValue": "mp3",
-            "menuValues": [
-                {
-                    "title": "MP3（推荐）",
-                    "value": "mp3"
-                },
-                {
-                    "title": "WAV",
-                    "value": "wav"
-                },
-                {
-                    "title": "FLAC",
-                    "value": "flac"
-                },
-                {
-                    "title": "Opus",
-                    "value": "opus"
-                }
-            ]
         },
         {
             "identifier": "stylePrompt",
             "type": "text",
             "title": "语气/风格指令",
-            "desc": "设置朗读语气和风格，例如「用自然清晰的语调朗读」或「欢快的情绪」",
-            "defaultValue": "用自然清晰的语调朗读",
+            "desc": "控制语速、语气和发音；修改后会生成新的缓存",
+            "defaultValue": "Read the English text clearly and accurately for an English learner. Use a neutral tone and a slightly slow, steady pace. Pronounce each word naturally, and read the supplied text exactly once without adding explanations or other words.",
             "textConfig": {
                 "type": "visible",
-                "placeholderText": "用自然清晰的语调朗读",
+                "placeholderText": "清晰、平稳地朗读英文",
                 "height": "26"
             }
         },
